@@ -10,6 +10,105 @@ usage() {
     exit 1
 }
 
+# Function to check if the file exists locally
+check_file_exists() {
+    if [ ! -f "$1" ]; then
+        echo "File not found: $1"
+        exit 1
+    fi
+}
+
+# Function to check if required environment variables are set
+check_env_vars() {
+    if [ -z "$AZURE_STORAGE_ACCOUNT" ] || [ -z "$AZURE_STORAGE_KEY" ] || [ -z "$AZURE_CONTAINER_NAME" ]; then
+        echo "Please set the AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_KEY, and AZURE_CONTAINER_NAME environment variables."
+        exit 1
+    fi
+}
+
+# Function to check if the blob already exists and handle user input
+handle_blob_exists() {
+    BLOB_EXISTS=$(az storage blob list \
+        --account-name "$AZURE_STORAGE_ACCOUNT" \
+        --account-key "$AZURE_STORAGE_KEY" \
+        --container-name "$AZURE_CONTAINER_NAME" \
+        --query "[?name=='$1']" \
+        --output tsv)
+
+    if [ -n "$BLOB_EXISTS" ]; then
+        echo "The file already exists in Azure Blob Storage."
+        echo "What would you like to do?"
+        echo "  [O]verwrite the existing file"
+        echo "  [S]kip uploading"
+        echo "  [R]ename the file and upload"
+        read -r -p "Enter your choice (O/S/R): " choice
+
+        case "$choice" in
+            [Oo])
+                OVERWRITE_OPTION="--overwrite"
+                ;;
+            [Ss])
+                echo "Skipping upload."
+                exit 0
+                ;;
+            [Rr])
+                read -r -p "Enter the new name for the file: " new_name
+                FILE_PATH_RENAMED="/tmp/$new_name"
+                cp "$FILE_PATH" "$FILE_PATH_RENAMED"
+                FILE_PATH="$FILE_PATH_RENAMED"
+                FILE_NAME="$new_name"
+                ;;
+            *)
+                echo "Invalid choice. Exiting."
+                exit 1
+                ;;
+        esac
+    else
+        OVERWRITE_OPTION=""
+    fi
+}
+
+# Function to upload the file using Azure CLI
+upload_file() {
+    echo "Uploading $FILE_PATH to Azure Blob Storage..."
+
+    UPLOAD_RESULT=$(az storage blob upload \
+        --account-name "$AZURE_STORAGE_ACCOUNT" \
+        --account-key "$AZURE_STORAGE_KEY" \
+        --container-name "$AZURE_CONTAINER_NAME" \
+        --name "$FILE_NAME" \
+        --file "$FILE_PATH" \
+        $OVERWRITE_OPTION 2>&1)
+
+    if [ $? -eq 0 ]; then
+        echo "File uploaded successfully!"
+    else
+        echo "Failed to upload file."
+        echo "Error details: $UPLOAD_RESULT"
+        exit 1
+    fi
+}
+
+# Function to generate and display shareable link
+generate_link() {
+    # Generate SAS token
+    EXPIRY_DATE=$(date -u -v+1H +"%Y-%m-%dT%H:%MZ")
+    
+    SAS_TOKEN=$(az storage blob generate-sas \
+        --account-name "$AZURE_STORAGE_ACCOUNT" \
+        --account-key "$AZURE_STORAGE_KEY" \
+        --container-name "$AZURE_CONTAINER_NAME" \
+        --name "$FILE_NAME" \
+        --permissions r \
+        --expiry "$EXPIRY_DATE" \
+        --output tsv)
+    
+    # Generate shareable link with SAS token
+    SHAREABLE_LINK="https://$AZURE_STORAGE_ACCOUNT.blob.core.windows.net/$AZURE_CONTAINER_NAME/$FILE_NAME?$SAS_TOKEN"
+    
+    echo "Shareable link: $SHAREABLE_LINK"
+}
+
 # Parse command-line arguments
 GENERATE_LINK=false
 while [[ "$1" == -* ]]; do
@@ -34,95 +133,14 @@ fi
 FILE_PATH=$1
 FILE_NAME=$(basename "$FILE_PATH")
 
-# Check if the file exists locally
-if [ ! -f "$FILE_PATH" ]; then
-    echo "File not found: $FILE_PATH"
-    exit 1
-fi
+# Run functions
+check_file_exists "$FILE_PATH"
+check_env_vars
+handle_blob_exists "$FILE_NAME"
+upload_file
 
-# Check if required environment variables are set
-if [ -z "$AZURE_STORAGE_ACCOUNT" ] || [ -z "$AZURE_STORAGE_KEY" ] || [ -z "$AZURE_CONTAINER_NAME" ]; then
-    echo "Please set the AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_KEY, and AZURE_CONTAINER_NAME environment variables."
-    exit 1
-fi
-
-# Check if the blob already exists in Azure Blob Storage
-BLOB_EXISTS=$(az storage blob list \
-    --account-name "$AZURE_STORAGE_ACCOUNT" \
-    --account-key "$AZURE_STORAGE_KEY" \
-    --container-name "$AZURE_CONTAINER_NAME" \
-    --query "[?name=='$FILE_NAME']" \
-    --output tsv)
-
-if [ -n "$BLOB_EXISTS" ]; then
-    echo "The file already exists in Azure Blob Storage."
-    echo "What would you like to do?"
-    echo "  [O]verwrite the existing file"
-    echo "  [S]kip uploading"
-    echo "  [R]ename the file and upload"
-    read -r -p "Enter your choice (O/S/R): " choice
-
-    case "$choice" in
-        [Oo])
-            OVERWRITE_OPTION="--overwrite"
-            ;;
-        [Ss])
-            echo "Skipping upload."
-            exit 0
-            ;;
-        [Rr])
-            read -r -p "Enter the new name for the file: " new_name
-            FILE_PATH_RENAMED="/tmp/$new_name"
-            cp "$FILE_PATH" "$FILE_PATH_RENAMED"
-            FILE_PATH="$FILE_PATH_RENAMED"
-            FILE_NAME="$new_name"
-            ;;
-        *)
-            echo "Invalid choice. Exiting."
-            exit 1
-            ;;
-    esac
-else
-    OVERWRITE_OPTION=""
-fi
-
-# Upload the file using Azure CLI
-echo "Uploading $FILE_PATH to Azure Blob Storage..."
-
-UPLOAD_RESULT=$(az storage blob upload \
-    --account-name "$AZURE_STORAGE_ACCOUNT" \
-    --account-key "$AZURE_STORAGE_KEY" \
-    --container-name "$AZURE_CONTAINER_NAME" \
-    --name "$FILE_NAME" \
-    --file "$FILE_PATH" \
-    $OVERWRITE_OPTION 2>&1)
-
-# Check if the upload was successful
-if [ $? -eq 0 ]; then
-    echo "File uploaded successfully!"
-    
-    if [ "$GENERATE_LINK" = true ]; then
-        # Generate SAS token
-        EXPIRY_DATE=$(date -u -v+1H +"%Y-%m-%dT%H:%MZ")
-        
-        SAS_TOKEN=$(az storage blob generate-sas \
-            --account-name "$AZURE_STORAGE_ACCOUNT" \
-            --account-key "$AZURE_STORAGE_KEY" \
-            --container-name "$AZURE_CONTAINER_NAME" \
-            --name "$FILE_NAME" \
-            --permissions r \
-            --expiry "$EXPIRY_DATE" \
-            --output tsv)
-        
-        # Generate shareable link with SAS token
-        SHAREABLE_LINK="https://$AZURE_STORAGE_ACCOUNT.blob.core.windows.net/$AZURE_CONTAINER_NAME/$FILE_NAME?$SAS_TOKEN"
-        
-        echo "Shareable link: $SHAREABLE_LINK"
-    fi
-else
-    echo "Failed to upload file."
-    echo "Error details: $UPLOAD_RESULT"
-    exit 1
+if [ "$GENERATE_LINK" = true ]; then
+    generate_link
 fi
 
 # Clean up renamed file if it was used
