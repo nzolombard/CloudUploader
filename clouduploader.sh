@@ -18,10 +18,40 @@ check_file_exists() {
     fi
 }
 
-# Function to check if required environment variables are set
+# Function to check if required environment variables are set, if not prompt user for input
 check_env_vars() {
-    if [ -z "$AZURE_STORAGE_ACCOUNT" ] || [ -z "$AZURE_STORAGE_KEY" ] || [ -z "$AZURE_CONTAINER_NAME" ]; then
-        echo "Please set the AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_KEY, and AZURE_CONTAINER_NAME environment variables."
+    if [ -z "$AZURE_CLIENT_ID" ]; then
+        read -r -p "Enter your Azure Client ID: " AZURE_CLIENT_ID
+    fi
+
+    if [ -z "$AZURE_CLIENT_SECRET" ]; then
+        read -r -sp "Enter your Azure Client Secret: " AZURE_CLIENT_SECRET
+        echo
+    fi
+
+    if [ -z "$AZURE_TENANT_ID" ]; then
+        read -r -p "Enter your Azure Tenant ID: " AZURE_TENANT_ID
+    fi
+
+    if [ -z "$AZURE_STORAGE_ACCOUNT" ]; then
+        read -r -p "Enter your Azure Storage Account Name: " AZURE_STORAGE_ACCOUNT
+    fi
+
+    if [ -z "$AZURE_CONTAINER_NAME" ]; then
+        read -r -p "Enter your Azure Container Name: " AZURE_CONTAINER_NAME
+    fi
+}
+
+# Function to authenticate using the Service Principal
+azure_login() {
+    az login --service-principal \
+        --username "$AZURE_CLIENT_ID" \
+        --password "$AZURE_CLIENT_SECRET" \
+        --tenant "$AZURE_TENANT_ID" \
+        --output none
+
+    if [ $? -ne 0 ]; then
+        echo "Azure login failed."
         exit 1
     fi
 }
@@ -74,7 +104,6 @@ upload_file() {
 
     UPLOAD_RESULT=$(az storage blob upload \
         --account-name "$AZURE_STORAGE_ACCOUNT" \
-        --account-key "$AZURE_STORAGE_KEY" \
         --container-name "$AZURE_CONTAINER_NAME" \
         --name "$FILE_NAME" \
         --file "$FILE_PATH" \
@@ -88,6 +117,7 @@ upload_file() {
         exit 1
     fi
 }
+
 
 # Function to generate and display shareable link
 generate_link() {
@@ -108,6 +138,8 @@ generate_link() {
     
     echo "Shareable link: $SHAREABLE_LINK"
 }
+
+# Main Script Execution
 
 # Parse command-line arguments
 GENERATE_LINK=false
@@ -136,6 +168,7 @@ FILE_NAME=$(basename "$FILE_PATH")
 # Run functions
 check_file_exists "$FILE_PATH"
 check_env_vars
+azure_login
 handle_blob_exists "$FILE_NAME"
 upload_file
 
